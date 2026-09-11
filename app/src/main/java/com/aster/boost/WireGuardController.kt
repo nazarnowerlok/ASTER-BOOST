@@ -14,14 +14,14 @@ class WireGuardController(context: Context) {
         override fun onStateChange(newState: Tunnel.State) = Unit
     }
 
-    suspend fun connect(configText: String) {
+    fun connect(configText: String) {
         val config = Config.parse(ByteArrayInputStream(configText.toByteArray(Charsets.UTF_8)))
         backend.setState(tunnel, Tunnel.State.UP, config)
     }
 
-    suspend fun disconnect() {
+    fun disconnect() {
         backend.setState(tunnel, Tunnel.State.DOWN, null)
     }
 
-    suspend fun isUp(): Boolean = backend.getState(tunnel) == Tunnel.State.UP
+    fun isUp(): Boolean = backend.getState(tunnel) == Tunnel.State.UP
 }

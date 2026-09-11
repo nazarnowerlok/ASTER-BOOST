@@ -1,8 +1,5 @@
 package com.aster.boost
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
 import kotlin.math.abs
@@ -35,7 +32,7 @@ object NetBench {
         "9.9.9.9" to 443
     )
 
-    suspend fun run(attempts: Int = 15): BenchResult = withContext(Dispatchers.IO) {
+    fun run(attempts: Int = 15): BenchResult {
         val samples = mutableListOf<Double>()
         var failures = 0
 
@@ -51,7 +48,7 @@ object NetBench {
             } catch (_: Exception) {
                 failures++
             }
-            delay(75)
+            Thread.sleep(75)
         }
 
         val sorted = samples.sorted()
@@ -64,6 +61,6 @@ object NetBench {
         }
         val loss = failures * 100.0 / attempts
 
-        BenchResult(avg, p95, jitter, loss)
+        return BenchResult(avg, p95, jitter, loss)
     }
 }
