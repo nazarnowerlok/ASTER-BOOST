@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var p95Text: TextView
     private lateinit var jitterText: TextView
     private lateinit var lossText: TextView
+    private lateinit var mtuText: TextView
     private lateinit var boostButton: Button
     private lateinit var importButton: Button
 
@@ -62,11 +63,11 @@ class MainActivity : Activity() {
         }
         scroll.addView(root, LinearLayout.LayoutParams(-1, -1))
 
-        val title = text("ASTER BOOST", 32f, Color.WHITE, Typeface.BOLD)
-        root.addView(title)
-
-        val subtitle = text("Cleanest measured route wins.", 15f, Color.rgb(170, 177, 193), Typeface.NORMAL)
-        root.addView(subtitle, marginParams(top = 4))
+        root.addView(text("ASTER BOOST", 32f, Color.WHITE, Typeface.BOLD))
+        root.addView(
+            text("Cleanest measured route wins.", 15f, Color.rgb(170, 177, 193), Typeface.NORMAL),
+            marginParams(top = 4)
+        )
 
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -82,6 +83,7 @@ class MainActivity : Activity() {
         p95Text = text("P95: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
         jitterText = text("Jitter: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
         lossText = text("Loss: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
+        mtuText = text("MTU: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
 
         card.addView(gradeText)
         card.addView(statusText, marginParams(top = 10))
@@ -90,6 +92,7 @@ class MainActivity : Activity() {
         card.addView(p95Text, marginParams(top = 5))
         card.addView(jitterText, marginParams(top = 5))
         card.addView(lossText, marginParams(top = 5))
+        card.addView(mtuText, marginParams(top = 5))
 
         boostButton = Button(this).apply {
             text = "SMART BOOST"
@@ -111,13 +114,15 @@ class MainActivity : Activity() {
         }
         root.addView(importButton, marginParams(height = 54, top = 12))
 
-        val note = text(
-            "DIRECT mode works without a VPN. If you load a private WireGuard config, SMART BOOST compares both paths and keeps the better measured route. Public probe latency is not the same as PUBG server ping.",
-            12.5f,
-            Color.rgb(145, 152, 168),
-            Typeface.NORMAL
+        root.addView(
+            text(
+                "DIRECT works without a VPN. With a private WireGuard node, SMART BOOST tests DIRECT and several safe MTU values, then keeps the route with the better stability score. Public probes are not PUBG server ping.",
+                12.5f,
+                Color.rgb(145, 152, 168),
+                Typeface.NORMAL
+            ),
+            marginParams(top = 18)
         )
-        root.addView(note, marginParams(top = 18))
 
         setContentView(scroll)
     }
@@ -144,28 +149,73 @@ class MainActivity : Activity() {
             try {
                 postStatus("Testing DIRECT")
                 runCatching { wg.disconnect() }
-                Thread.sleep(350)
-                val direct = NetBench.run()
+                Thread.sleep(400)
+                val direct = NetBench.run(18)
 
                 if (config == null) {
                     runOnUiThread {
-                        showResult(direct, "DIRECT", "DIRECT active • add a private WireGuard node to compare VPN")
+                        showResult(
+                            direct,
+                            mode = "DIRECT",
+                            status = "DIRECT active • add ASTER NODE to compare VPN",
+                            mtu = null
+                        )
+                    }
+                    return@Thread
+                }
+
+                var bestVpn: BenchResult? = null
+                var bestMtu: Int? = null
+                var bestConfig: String? = null
+
+                for (mtu in ConfigTuner.candidateMtus(config)) {
+                    postStatus("Testing ASTER NODE • MTU $mtu")
+                    runCatching { wg.disconnect() }
+                    Thread.sleep(300)
+
+                    val tuned = ConfigTuner.withMtu(config, mtu)
+                    val candidate = try {
+                        wg.connect(tuned)
+                        Thread.sleep(1200)
+                        NetBench.run(15)
+                    } catch (_: Exception) {
+                        BenchResult(999.0, 999.0, 999.0, 100.0)
+                    }
+
+                    if (bestVpn == null || candidate.score < bestVpn!!.score) {
+                        bestVpn = candidate
+                        bestMtu = mtu
+                        bestConfig = tuned
+                    }
+                }
+
+                runCatching { wg.disconnect() }
+
+                val vpn = bestVpn
+                val useVpn = vpn != null && bestConfig != null && vpn.lossPct < 100.0 && vpn.score + 1.0 < direct.score
+
+                if (useVpn) {
+                    postStatus("Activating ASTER NODE • MTU $bestMtu")
+                    wg.connect(bestConfig!!)
+                    store.save(bestConfig!!)
+                    Thread.sleep(600)
+                    runOnUiThread {
+                        showResult(
+                            vpn!!,
+                            mode = "ASTER NODE",
+                            status = "BOOSTED • ${vpn.grade}",
+                            mtu = bestMtu
+                        )
+                        updateImportButton()
                     }
                 } else {
-                    postStatus("Testing ASTER NODE")
-                    wg.connect(config)
-                    Thread.sleep(1100)
-                    val vpn = NetBench.run()
-
-                    if (vpn.score + 1.0 < direct.score) {
-                        runOnUiThread {
-                            showResult(vpn, "ASTER NODE", "BOOSTED • ${vpn.grade}")
-                        }
-                    } else {
-                        wg.disconnect()
-                        runOnUiThread {
-                            showResult(direct, "DIRECT", "DIRECT wins")
-                        }
+                    runOnUiThread {
+                        showResult(
+                            direct,
+                            mode = "DIRECT",
+                            status = if (vpn == null || vpn.lossPct >= 100.0) "ASTER NODE unavailable • DIRECT active" else "DIRECT wins",
+                            mtu = null
+                        )
                     }
                 }
             } catch (e: Exception) {
@@ -180,7 +230,7 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun showResult(result: BenchResult, mode: String, status: String) {
+    private fun showResult(result: BenchResult, mode: String, status: String, mtu: Int?) {
         gradeText.text = result.grade
         statusText.text = "Status: $status"
         modeText.text = "Mode: $mode"
@@ -188,6 +238,7 @@ class MainActivity : Activity() {
         p95Text.text = "P95: ${formatMs(result.p95Ms)}"
         jitterText.text = "Jitter: ${formatMs(result.jitterMs)}"
         lossText.text = "Loss: ${String.format(Locale.US, "%.0f%%", result.lossPct)}"
+        mtuText.text = "MTU: ${mtu?.toString() ?: "DIRECT"}"
     }
 
     private fun postStatus(status: String) {
@@ -221,9 +272,12 @@ class MainActivity : Activity() {
                     }
                     require(config.contains("[Interface]", ignoreCase = true))
                     require(config.contains("[Peer]", ignoreCase = true))
+                    require(config.contains("PrivateKey", ignoreCase = true))
+                    require(config.contains("PublicKey", ignoreCase = true))
+                    require(config.contains("Endpoint", ignoreCase = true))
                     store.save(config)
                     updateImportButton()
-                    statusText.text = "Status: ASTER node loaded"
+                    statusText.text = "Status: ASTER node loaded • tap SMART BOOST"
                 } catch (_: Exception) {
                     statusText.text = "Status: Bad WireGuard config"
                 }
