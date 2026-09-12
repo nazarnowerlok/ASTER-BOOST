@@ -23,6 +23,7 @@ class MainActivity : Activity() {
         private const val IMPORT_REQUEST = 2001
         private const val VPN_PERMISSION_REQUEST = 2002
         private const val FREE_CONFIG_URL = "https://protonvpn.com/support/wireguard-configurations"
+        private const val VERIFY_WINDOW_MS = 6500L
     }
 
     private lateinit var wg: WireGuardController
@@ -72,9 +73,9 @@ class MainActivity : Activity() {
         }
         scroll.addView(root, LinearLayout.LayoutParams(-1, -1))
 
-        root.addView(text("ASTER BOOST 2.0", 31f, Color.WHITE, Typeface.BOLD))
+        root.addView(text("ASTER BOOST 2.1", 31f, Color.WHITE, Typeface.BOLD))
         root.addView(
-            text("VPN first. Verify it for real. Optimize later.", 14.5f, Color.rgb(169, 177, 194), Typeface.NORMAL),
+            text("Real WireGuard verification with automatic fail-safe.", 14.5f, Color.rgb(169, 177, 194), Typeface.NORMAL),
             marginParams(top = 4)
         )
 
@@ -118,6 +119,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
             isAllCaps = false
+            isEnabled = false
             backgroundTintList = ColorStateList.valueOf(Color.rgb(166, 65, 65))
             setOnClickListener { disconnectVpn() }
         }
@@ -140,15 +142,17 @@ class MainActivity : Activity() {
             isAllCaps = false
             backgroundTintList = ColorStateList.valueOf(Color.rgb(60, 65, 83))
             setOnClickListener {
-                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(FREE_CONFIG_URL))) }
-                    .onFailure { statusText.text = "Status: Could not open browser" }
+                withDirectInternet {
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(FREE_CONFIG_URL))) }
+                        .onFailure { statusText.text = "Status: Could not open browser" }
+                }
             }
         }
         root.addView(freeConfigButton, marginParams(height = 52, top = 10))
 
         root.addView(
             text(
-                "This build deliberately removes SMART BOOST until the tunnel itself is proven. CONNECT & VERIFY starts the official WireGuard userspace backend, creates real traffic, checks WireGuard RX/TX + handshake data, and compares your public IP before/after. It never shows VPN: VERIFIED just because Android displayed a VPN icon.",
+                "Fail-safe: if WireGuard sends traffic but gets no handshake/return traffic, ASTER disconnects it automatically so your normal internet comes back. Replacing a config also disconnects the old tunnel first.",
                 12.5f,
                 Color.rgb(145, 152, 168),
                 Typeface.NORMAL
@@ -188,63 +192,83 @@ class MainActivity : Activity() {
             try {
                 postStatus("Checking direct connection…")
                 runCatching { if (wg.isUp()) wg.disconnect() }
-                Thread.sleep(350)
+                Thread.sleep(300)
                 val directIp = NetworkIdentity.publicIp()
 
                 postStatus("Starting WireGuard…")
                 wg.validate(config)
                 wg.connect(config)
-                Thread.sleep(1400)
+                Thread.sleep(500)
 
-                postStatus("Generating VPN traffic…")
-                val vpnIp = NetworkIdentity.publicIp()
-                Thread.sleep(900)
-                val health = wg.health()
+                postStatus("Probing VPN route…")
+                var vpnIp = NetworkIdentity.publicIp()
+                var health = wg.health()
+                val deadline = System.currentTimeMillis() + VERIFY_WINDOW_MS
+
+                while (
+                    health.up &&
+                    !(health.hasRecentHandshake && health.rxBytes > 0L) &&
+                    System.currentTimeMillis() < deadline
+                ) {
+                    Thread.sleep(500)
+                    health = wg.health()
+                }
 
                 if (!health.up) error("WireGuard backend reports tunnel DOWN")
 
-                val ipChanged = directIp != null && vpnIp != null && !directIp.equals(vpnIp, ignoreCase = true)
-                val verified = ipChanged || (health.hasRecentHandshake && health.hasTraffic)
                 val endpoint = extractEndpoint(config) ?: "unknown"
+                val verified = health.hasRecentHandshake && health.rxBytes > 0L
 
-                runOnUiThread {
-                    endpointText.text = "Endpoint: $endpoint"
-                    directIpText.text = "Direct IP: ${directIp ?: "check failed"}"
-                    vpnIpText.text = "VPN IP: ${vpnIp ?: "check failed"}"
-                    trafficText.text = "Traffic: RX ${formatBytes(health.rxBytes)}  /  TX ${formatBytes(health.txBytes)}"
-                    handshakeText.text = when (val age = health.handshakeAgeSeconds) {
-                        null -> "Handshake: NONE"
-                        else -> "Handshake: ${age}s ago"
+                if (!verified) {
+                    val failedHealth = health
+                    runCatching { wg.disconnect() }
+                    Thread.sleep(250)
+
+                    runOnUiThread {
+                        endpointText.text = "Endpoint: $endpoint"
+                        directIpText.text = "Direct IP: ${directIp ?: "check failed"}"
+                        vpnIpText.text = "VPN IP: check failed"
+                        trafficText.text = "Traffic: RX ${formatBytes(failedHealth.rxBytes)}  /  TX ${formatBytes(failedHealth.txBytes)}"
+                        handshakeText.text = failedHealth.handshakeAgeSeconds?.let { "Handshake: ${it}s ago" } ?: "Handshake: NONE"
+                        vpnStateText.text = "VPN: FAILED • AUTO OFF"
+                        vpnStateText.setTextColor(Color.rgb(255, 183, 96))
+                        statusText.text = "Status: No server reply • direct internet restored automatically"
+                        connectButton.text = "TRY AGAIN"
+                        disconnectButton.isEnabled = false
                     }
+                } else {
+                    if (vpnIp == null) vpnIp = NetworkIdentity.publicIp()
+                    val ipChanged = directIp != null && vpnIp != null && !directIp.equals(vpnIp, ignoreCase = true)
 
-                    when {
-                        verified && ipChanged -> {
+                    runOnUiThread {
+                        endpointText.text = "Endpoint: $endpoint"
+                        directIpText.text = "Direct IP: ${directIp ?: "check failed"}"
+                        vpnIpText.text = "VPN IP: ${vpnIp ?: "check failed"}"
+                        trafficText.text = "Traffic: RX ${formatBytes(health.rxBytes)}  /  TX ${formatBytes(health.txBytes)}"
+                        handshakeText.text = health.handshakeAgeSeconds?.let { "Handshake: ${it}s ago" } ?: "Handshake: NONE"
+
+                        if (ipChanged) {
                             vpnStateText.text = "VPN: VERIFIED ✓"
-                            vpnStateText.setTextColor(Color.rgb(119, 230, 159))
                             statusText.text = "Status: REAL VPN ACTIVE • public IP changed"
-                        }
-                        verified -> {
+                        } else {
                             vpnStateText.text = "VPN: ACTIVE ✓"
-                            vpnStateText.setTextColor(Color.rgb(119, 230, 159))
-                            statusText.text = "Status: WireGuard handshake + traffic verified"
+                            statusText.text = "Status: WireGuard handshake + return traffic verified"
                         }
-                        else -> {
-                            vpnStateText.text = "VPN: NO HANDSHAKE"
-                            vpnStateText.setTextColor(Color.rgb(255, 183, 96))
-                            statusText.text = "Status: Tunnel interface is UP, but server did not verify"
-                        }
+                        vpnStateText.setTextColor(Color.rgb(119, 230, 159))
+                        connectButton.text = "RECONNECT & VERIFY"
+                        disconnectButton.isEnabled = true
                     }
-                    connectButton.text = "RECONNECT & VERIFY"
-                    disconnectButton.isEnabled = true
                 }
             } catch (e: Exception) {
                 runCatching { wg.disconnect() }
                 runOnUiThread {
-                    vpnStateText.text = "VPN: ERROR"
+                    vpnStateText.text = "VPN: ERROR • AUTO OFF"
                     vpnStateText.setTextColor(Color.rgb(255, 126, 126))
-                    statusText.text = "Status: ${friendlyError(e)}"
+                    statusText.text = "Status: ${friendlyError(e)} • direct internet restored"
+                    vpnIpText.text = "VPN IP: —"
                     handshakeText.text = "Handshake: —"
                     trafficText.text = "Traffic: RX —  /  TX —"
+                    disconnectButton.isEnabled = false
                 }
             } finally {
                 busy = false
@@ -282,12 +306,29 @@ class MainActivity : Activity() {
     private fun refreshTunnelState() {
         if (busy) return
         Thread {
-            val health = runCatching { wg.health() }.getOrNull()
+            var health = runCatching { wg.health() }.getOrNull()
+            val clearlyDead = health?.let {
+                it.up && !it.hasRecentHandshake && it.rxBytes == 0L && it.txBytes > 0L
+            } == true
+
+            if (clearlyDead) {
+                runCatching { wg.disconnect() }
+                Thread.sleep(150)
+                health = runCatching { wg.health() }.getOrNull()
+            }
+
             runOnUiThread {
-                if (health?.up == true) {
-                    vpnStateText.text = if (health.hasRecentHandshake && health.hasTraffic) "VPN: ACTIVE ✓" else "VPN: UP"
+                if (clearlyDead) {
+                    vpnStateText.text = "VPN: OFF"
+                    vpnStateText.setTextColor(Color.WHITE)
+                    statusText.text = "Status: Dead tunnel auto-disconnected • direct internet restored"
+                    disconnectButton.isEnabled = false
+                    connectButton.text = "TRY AGAIN"
+                } else if (health?.up == true) {
+                    val active = health.hasRecentHandshake && health.rxBytes > 0L
+                    vpnStateText.text = if (active) "VPN: ACTIVE ✓" else "VPN: UP"
                     vpnStateText.setTextColor(
-                        if (health.hasRecentHandshake && health.hasTraffic) Color.rgb(119, 230, 159) else Color.rgb(255, 183, 96)
+                        if (active) Color.rgb(119, 230, 159) else Color.rgb(255, 183, 96)
                     )
                     trafficText.text = "Traffic: RX ${formatBytes(health.rxBytes)}  /  TX ${formatBytes(health.txBytes)}"
                     handshakeText.text = health.handshakeAgeSeconds?.let { "Handshake: ${it}s ago" } ?: "Handshake: NONE"
@@ -314,11 +355,31 @@ class MainActivity : Activity() {
     }
 
     private fun openConfigPicker() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
+        if (busy) return
+        withDirectInternet {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }
+            startActivityForResult(intent, IMPORT_REQUEST)
         }
-        startActivityForResult(intent, IMPORT_REQUEST)
+    }
+
+    private fun withDirectInternet(action: () -> Unit) {
+        if (busy) return
+        busy = true
+        setBusy(true)
+        postStatus("Restoring direct internet…")
+
+        Thread {
+            runCatching { if (wg.isUp()) wg.disconnect() }
+            Thread.sleep(200)
+            runOnUiThread {
+                busy = false
+                setBusy(false)
+                action()
+            }
+        }.start()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -377,7 +438,7 @@ class MainActivity : Activity() {
         importButton.isEnabled = !value
         freeConfigButton.isEnabled = !value
         if (value) {
-            connectButton.text = "VERIFYING…"
+            connectButton.text = "WORKING…"
             disconnectButton.isEnabled = false
         } else {
             refreshConfigUi()
