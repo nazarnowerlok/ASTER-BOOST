@@ -13,8 +13,8 @@ android {
         applicationId = "com.aster.boost"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "2.0"
     }
 
     compileOptions {
@@ -32,6 +32,6 @@ kotlin {
 }
 
 dependencies {
-    implementation("com.wireguard.android:tunnel:1.0.20260102")
+    implementation("com.wireguard.android:tunnel:1.0.20260315")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
