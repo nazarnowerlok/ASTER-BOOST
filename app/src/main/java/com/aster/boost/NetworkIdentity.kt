@@ -13,11 +13,11 @@ object NetworkIdentity {
         for (endpoint in endpoints) {
             val result = runCatching {
                 val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 4500
-                    readTimeout = 4500
+                    connectTimeout = 2000
+                    readTimeout = 2000
                     requestMethod = "GET"
                     useCaches = false
-                    setRequestProperty("User-Agent", "ASTER-BOOST/2.0")
+                    setRequestProperty("User-Agent", "ASTER-BOOST/2.1")
                 }
                 try {
                     connection.inputStream.bufferedReader().use { it.readText().trim() }
