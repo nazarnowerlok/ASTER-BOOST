@@ -1,17 +1,22 @@
-# ASTER BOOST
+# ASTER BOOST 2.0
 
-ASTER BOOST is an Android network-route tester for gaming.
+This is a clean rebuild focused on proving that the VPN itself works before doing any gaming-route optimization.
 
-What it does:
-- measures DIRECT internet latency, P95 tail latency, jitter and connection-failure loss;
-- can import a private WireGuard `.conf`;
-- tests several safe MTU values automatically;
-- keeps the VPN only when its measured route is better than DIRECT;
-- leaves DIRECT active if the tunnel is slower or unstable.
+## What 2.0 does
+- imports a standard WireGuard `.conf` and parses it with the official WireGuard Android tunnel library;
+- asks Android for VPN permission correctly;
+- starts/stops a real WireGuard userspace tunnel;
+- generates real internet traffic through the tunnel;
+- reads WireGuard RX/TX statistics and the latest handshake timestamp;
+- checks the public IP before and after connection;
+- shows `VPN: VERIFIED` only when the tunnel is genuinely verified, not just because Android shows a VPN icon.
 
-Daily use after a private node is loaded:
-**open ASTER BOOST → SMART BOOST → play**.
+The old SMART BOOST/MTU logic is intentionally not part of the main flow yet. First the tunnel must be proven on the user's phone. Route optimization can be added only after this core is known-good.
 
-Important: the app cannot create a remote VPN server out of nothing and it cannot guarantee 10–20 ms. A real remote WireGuard node is required for VPN routing. The included `server/install_aster_node.sh` can configure a small Ubuntu/Debian VPS you control. The generated `aster-client.conf` contains a private key and must not be shared publicly.
+## Free config option
+The app includes a button that opens Proton VPN's official WireGuard configuration instructions. Proton's Free plan currently supports generating standard WireGuard configuration files. The user owns that account/config; ASTER BOOST does not bundle shared private VPN keys.
 
-Public probe latency is only a route-quality signal; it is not the same as PUBG server ping or hit registration.
+## Important
+A VPN client still needs a real remote WireGuard server. An APK cannot create an internet exit server out of nothing. A working `.conf` can come from a VPN provider that supports standard WireGuard configs or from a VPS you control.
+
+A VPN can improve a bad route, jitter, or loss, but it cannot guarantee a specific PUBG ping or manipulate hit registration.
