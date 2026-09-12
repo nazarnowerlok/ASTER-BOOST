@@ -7,7 +7,7 @@ object ConfigTuner {
         mtuRegex.find(config)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
     fun candidateMtus(config: String): List<Int> =
-        listOfNotNull(extractMtu(config), 1420, 1380, 1360, 1320)
+        listOfNotNull(extractMtu(config), 1280, 1320, 1360, 1380, 1400, 1420)
             .filter { it in 1200..1500 }
             .distinct()
 
