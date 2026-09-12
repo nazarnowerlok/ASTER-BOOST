@@ -6,6 +6,7 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
 import android.view.Gravity
@@ -19,26 +20,25 @@ import java.util.Locale
 
 class MainActivity : Activity() {
     companion object {
-        private const val IMPORT_REQUEST = 1001
-        private const val VPN_REQUEST_BOOST = 1002
-        private const val VPN_REQUEST_CONNECT = 1003
+        private const val IMPORT_REQUEST = 2001
+        private const val VPN_PERMISSION_REQUEST = 2002
+        private const val FREE_CONFIG_URL = "https://protonvpn.com/support/wireguard-configurations"
     }
 
     private lateinit var wg: WireGuardController
     private lateinit var store: ConfigStore
 
-    private lateinit var gradeText: TextView
+    private lateinit var vpnStateText: TextView
     private lateinit var statusText: TextView
-    private lateinit var modeText: TextView
-    private lateinit var vpnText: TextView
-    private lateinit var avgText: TextView
-    private lateinit var p95Text: TextView
-    private lateinit var jitterText: TextView
-    private lateinit var lossText: TextView
-    private lateinit var mtuText: TextView
-    private lateinit var boostButton: Button
-    private lateinit var vpnButton: Button
+    private lateinit var endpointText: TextView
+    private lateinit var directIpText: TextView
+    private lateinit var vpnIpText: TextView
+    private lateinit var trafficText: TextView
+    private lateinit var handshakeText: TextView
+    private lateinit var connectButton: Button
+    private lateinit var disconnectButton: Button
     private lateinit var importButton: Button
+    private lateinit var freeConfigButton: Button
 
     @Volatile
     private var busy = false
@@ -48,12 +48,13 @@ class MainActivity : Activity() {
         wg = WireGuardController(this)
         store = ConfigStore(this)
         buildUi()
-        refreshControls()
+        refreshConfigUi()
+        refreshTunnelState()
     }
 
     override fun onResume() {
         super.onResume()
-        if (::vpnButton.isInitialized) refreshControls()
+        if (::vpnStateText.isInitialized && !busy) refreshTunnelState()
     }
 
     private fun buildUi() {
@@ -71,9 +72,9 @@ class MainActivity : Activity() {
         }
         scroll.addView(root, LinearLayout.LayoutParams(-1, -1))
 
-        root.addView(text("ASTER BOOST", 32f, Color.WHITE, Typeface.BOLD))
+        root.addView(text("ASTER BOOST 2.0", 31f, Color.WHITE, Typeface.BOLD))
         root.addView(
-            text("Real WireGuard control + route tuning.", 15f, Color.rgb(170, 177, 193), Typeface.NORMAL),
+            text("VPN first. Verify it for real. Optimize later.", 14.5f, Color.rgb(169, 177, 194), Typeface.NORMAL),
             marginParams(top = 4)
         )
 
@@ -84,60 +85,70 @@ class MainActivity : Activity() {
         }
         root.addView(card, marginParams(top = 22))
 
-        gradeText = text("NETWORK", 21f, Color.WHITE, Typeface.BOLD)
-        statusText = text("Status: READY", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
-        modeText = text("Mode: DIRECT", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
-        vpnText = text("VPN: OFF", 14f, Color.rgb(210, 214, 223), Typeface.BOLD)
-        avgText = text("AVG: —", 16f, Color.WHITE, Typeface.BOLD)
-        p95Text = text("P95: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
-        jitterText = text("Jitter: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
-        lossText = text("Loss: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
-        mtuText = text("MTU: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
+        vpnStateText = text("VPN: OFF", 22f, Color.WHITE, Typeface.BOLD)
+        statusText = text("Status: READY", 14f, Color.rgb(215, 219, 228), Typeface.NORMAL)
+        endpointText = text("Endpoint: no config", 13.5f, Color.rgb(190, 197, 211), Typeface.NORMAL)
+        directIpText = text("Direct IP: —", 13.5f, Color.rgb(190, 197, 211), Typeface.NORMAL)
+        vpnIpText = text("VPN IP: —", 13.5f, Color.rgb(190, 197, 211), Typeface.NORMAL)
+        trafficText = text("Traffic: RX —  /  TX —", 13.5f, Color.rgb(190, 197, 211), Typeface.NORMAL)
+        handshakeText = text("Handshake: —", 13.5f, Color.rgb(190, 197, 211), Typeface.NORMAL)
 
-        card.addView(gradeText)
+        card.addView(vpnStateText)
         card.addView(statusText, marginParams(top = 10))
-        card.addView(modeText, marginParams(top = 5))
-        card.addView(vpnText, marginParams(top = 5))
-        card.addView(avgText, marginParams(top = 16))
-        card.addView(p95Text, marginParams(top = 5))
-        card.addView(jitterText, marginParams(top = 5))
-        card.addView(lossText, marginParams(top = 5))
-        card.addView(mtuText, marginParams(top = 5))
+        card.addView(endpointText, marginParams(top = 12))
+        card.addView(directIpText, marginParams(top = 6))
+        card.addView(vpnIpText, marginParams(top = 6))
+        card.addView(trafficText, marginParams(top = 6))
+        card.addView(handshakeText, marginParams(top = 6))
 
-        boostButton = Button(this).apply {
-            text = "SMART BOOST"
+        connectButton = Button(this).apply {
+            text = "CONNECT & VERIFY"
             textSize = 17f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
             isAllCaps = false
-            backgroundTintList = ColorStateList.valueOf(Color.rgb(89, 72, 246))
-            setOnClickListener { startSmartBoost() }
+            backgroundTintList = ColorStateList.valueOf(Color.rgb(46, 142, 91))
+            setOnClickListener { requestConnect() }
         }
-        root.addView(boostButton, marginParams(height = 62, top = 18))
+        root.addView(connectButton, marginParams(height = 62, top = 18))
 
-        vpnButton = Button(this).apply {
-            text = "SETUP VPN NODE"
-            textSize = 16f
+        disconnectButton = Button(this).apply {
+            text = "DISCONNECT VPN"
+            textSize = 15.5f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
             isAllCaps = false
-            backgroundTintList = ColorStateList.valueOf(Color.rgb(33, 126, 86))
-            setOnClickListener { toggleVpn() }
+            backgroundTintList = ColorStateList.valueOf(Color.rgb(166, 65, 65))
+            setOnClickListener { disconnectVpn() }
         }
-        root.addView(vpnButton, marginParams(height = 56, top = 12))
+        root.addView(disconnectButton, marginParams(height = 54, top = 10))
 
         importButton = Button(this).apply {
+            text = "IMPORT WIREGUARD .CONF"
             textSize = 15f
             setTextColor(Color.WHITE)
             isAllCaps = false
-            backgroundTintList = ColorStateList.valueOf(Color.rgb(45, 51, 65))
+            backgroundTintList = ColorStateList.valueOf(Color.rgb(50, 57, 72))
             setOnClickListener { openConfigPicker() }
         }
-        root.addView(importButton, marginParams(height = 54, top = 12))
+        root.addView(importButton, marginParams(height = 54, top = 10))
+
+        freeConfigButton = Button(this).apply {
+            text = "GET FREE WIREGUARD CONFIG"
+            textSize = 14.5f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            backgroundTintList = ColorStateList.valueOf(Color.rgb(60, 65, 83))
+            setOnClickListener {
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(FREE_CONFIG_URL))) }
+                    .onFailure { statusText.text = "Status: Could not open browser" }
+            }
+        }
+        root.addView(freeConfigButton, marginParams(height = 52, top = 10))
 
         root.addView(
             text(
-                "SMART BOOST compares DIRECT and the saved WireGuard node, tests safe MTU values, and leaves the better route active. CONNECT VPN forces the saved node on immediately. A real remote WireGuard node is required; ASTER BOOST does not fake VPN status or fake ping.",
+                "This build deliberately removes SMART BOOST until the tunnel itself is proven. CONNECT & VERIFY starts the official WireGuard userspace backend, creates real traffic, checks WireGuard RX/TX + handshake data, and compares your public IP before/after. It never shows VPN: VERIFIED just because Android displayed a VPN icon.",
                 12.5f,
                 Color.rgb(145, 152, 168),
                 Typeface.NORMAL
@@ -148,81 +159,96 @@ class MainActivity : Activity() {
         setContentView(scroll)
     }
 
-    private fun startSmartBoost() {
+    private fun requestConnect() {
         if (busy) return
-        val config = store.load()
-        if (config != null) {
-            val permissionIntent = VpnService.prepare(this)
-            if (permissionIntent != null) {
-                startActivityForResult(permissionIntent, VPN_REQUEST_BOOST)
-                return
-            }
-        }
-        runBoost(config)
-    }
 
-    private fun toggleVpn() {
-        if (busy) return
         val config = store.load()
         if (config == null) {
-            statusText.text = "Status: Load ASTER NODE first"
+            statusText.text = "Status: Import a working WireGuard .conf first"
             openConfigPicker()
             return
         }
 
-        busy = true
-        setBusyUi(true)
-        Thread {
-            val up = runCatching { wg.isUp() }.getOrDefault(false)
-            busy = false
-            runOnUiThread {
-                setBusyUi(false)
-                if (up) disconnectVpn() else requestOrConnectVpn()
-            }
-        }.start()
-    }
-
-    private fun requestOrConnectVpn() {
         val permissionIntent = VpnService.prepare(this)
         if (permissionIntent != null) {
-            startActivityForResult(permissionIntent, VPN_REQUEST_CONNECT)
+            startActivityForResult(permissionIntent, VPN_PERMISSION_REQUEST)
         } else {
-            connectSavedVpn()
+            connectAndVerify()
         }
     }
 
-    private fun connectSavedVpn() {
+    private fun connectAndVerify() {
         if (busy) return
-        val config = store.load() ?: run {
-            statusText.text = "Status: No ASTER NODE loaded"
-            return
-        }
+        val config = store.load() ?: return
 
         busy = true
-        setBusyUi(true)
+        setBusy(true)
+
         Thread {
             try {
-                postStatus("Connecting VPN")
+                postStatus("Checking direct connection…")
+                runCatching { if (wg.isUp()) wg.disconnect() }
+                Thread.sleep(350)
+                val directIp = NetworkIdentity.publicIp()
+
+                postStatus("Starting WireGuard…")
+                wg.validate(config)
                 wg.connect(config)
+                Thread.sleep(1400)
+
+                postStatus("Generating VPN traffic…")
+                val vpnIp = NetworkIdentity.publicIp()
                 Thread.sleep(900)
-                if (!wg.isUp()) error("Tunnel did not come up")
-                val result = NetBench.run(12)
+                val health = wg.health()
+
+                if (!health.up) error("WireGuard backend reports tunnel DOWN")
+
+                val ipChanged = directIp != null && vpnIp != null && !directIp.equals(vpnIp, ignoreCase = true)
+                val verified = ipChanged || (health.hasRecentHandshake && health.hasTraffic)
+                val endpoint = extractEndpoint(config) ?: "unknown"
+
                 runOnUiThread {
-                    showResult(result, "ASTER NODE", "VPN CONNECTED • ${result.grade}", ConfigTuner.extractMtu(config))
-                    vpnText.text = "VPN: ON"
+                    endpointText.text = "Endpoint: $endpoint"
+                    directIpText.text = "Direct IP: ${directIp ?: "check failed"}"
+                    vpnIpText.text = "VPN IP: ${vpnIp ?: "check failed"}"
+                    trafficText.text = "Traffic: RX ${formatBytes(health.rxBytes)}  /  TX ${formatBytes(health.txBytes)}"
+                    handshakeText.text = when (val age = health.handshakeAgeSeconds) {
+                        null -> "Handshake: NONE"
+                        else -> "Handshake: ${age}s ago"
+                    }
+
+                    when {
+                        verified && ipChanged -> {
+                            vpnStateText.text = "VPN: VERIFIED ✓"
+                            vpnStateText.setTextColor(Color.rgb(119, 230, 159))
+                            statusText.text = "Status: REAL VPN ACTIVE • public IP changed"
+                        }
+                        verified -> {
+                            vpnStateText.text = "VPN: ACTIVE ✓"
+                            vpnStateText.setTextColor(Color.rgb(119, 230, 159))
+                            statusText.text = "Status: WireGuard handshake + traffic verified"
+                        }
+                        else -> {
+                            vpnStateText.text = "VPN: NO HANDSHAKE"
+                            vpnStateText.setTextColor(Color.rgb(255, 183, 96))
+                            statusText.text = "Status: Tunnel interface is UP, but server did not verify"
+                        }
+                    }
+                    connectButton.text = "RECONNECT & VERIFY"
+                    disconnectButton.isEnabled = true
                 }
             } catch (e: Exception) {
                 runCatching { wg.disconnect() }
                 runOnUiThread {
-                    statusText.text = "Status: VPN error: ${e.message ?: "unknown"}"
-                    vpnText.text = "VPN: OFF"
+                    vpnStateText.text = "VPN: ERROR"
+                    vpnStateText.setTextColor(Color.rgb(255, 126, 126))
+                    statusText.text = "Status: ${friendlyError(e)}"
+                    handshakeText.text = "Handshake: —"
+                    trafficText.text = "Traffic: RX —  /  TX —"
                 }
             } finally {
                 busy = false
-                runOnUiThread {
-                    setBusyUi(false)
-                    refreshControls()
-                }
+                runOnUiThread { setBusy(false) }
             }
         }.start()
     }
@@ -230,158 +256,61 @@ class MainActivity : Activity() {
     private fun disconnectVpn() {
         if (busy) return
         busy = true
-        setBusyUi(true)
+        setBusy(true)
+
         Thread {
             try {
-                wg.disconnect()
+                runCatching { wg.disconnect() }
                 Thread.sleep(250)
                 runOnUiThread {
-                    modeText.text = "Mode: DIRECT"
-                    vpnText.text = "VPN: OFF"
+                    vpnStateText.text = "VPN: OFF"
+                    vpnStateText.setTextColor(Color.WHITE)
                     statusText.text = "Status: VPN disconnected"
-                    mtuText.text = "MTU: DIRECT"
+                    vpnIpText.text = "VPN IP: —"
+                    trafficText.text = "Traffic: RX —  /  TX —"
+                    handshakeText.text = "Handshake: —"
+                    connectButton.text = "CONNECT & VERIFY"
+                    disconnectButton.isEnabled = false
                 }
-            } catch (e: Exception) {
-                runOnUiThread { statusText.text = "Status: Disconnect error: ${e.message ?: "unknown"}" }
             } finally {
                 busy = false
-                runOnUiThread {
-                    setBusyUi(false)
-                    refreshControls()
-                }
+                runOnUiThread { setBusy(false) }
             }
         }.start()
     }
 
-    private fun runBoost(config: String?) {
+    private fun refreshTunnelState() {
         if (busy) return
-        busy = true
-        setBusyUi(true)
-
         Thread {
-            try {
-                postStatus("Testing DIRECT")
-                runCatching { wg.disconnect() }
-                Thread.sleep(400)
-                val direct = NetBench.run(18)
-
-                if (config == null) {
-                    runOnUiThread {
-                        showResult(direct, "DIRECT", "DIRECT active • load ASTER NODE for real VPN", null)
-                        vpnText.text = "VPN: OFF"
-                    }
-                    return@Thread
-                }
-
-                var bestVpn: BenchResult? = null
-                var bestMtu: Int? = null
-                var bestConfig: String? = null
-
-                for (mtu in ConfigTuner.candidateMtus(config)) {
-                    postStatus("Testing ASTER NODE • MTU $mtu")
-                    runCatching { wg.disconnect() }
-                    Thread.sleep(300)
-
-                    val tuned = ConfigTuner.withMtu(config, mtu)
-                    val candidate = try {
-                        wg.connect(tuned)
-                        Thread.sleep(1200)
-                        if (!wg.isUp()) throw IllegalStateException("Tunnel is down")
-                        NetBench.run(15)
-                    } catch (_: Exception) {
-                        BenchResult(999.0, 999.0, 999.0, 100.0)
-                    }
-
-                    if (bestVpn == null || candidate.score < bestVpn!!.score) {
-                        bestVpn = candidate
-                        bestMtu = mtu
-                        bestConfig = tuned
-                    }
-                }
-
-                runCatching { wg.disconnect() }
-
-                val vpn = bestVpn
-                val useVpn = vpn != null && bestConfig != null && vpn.lossPct < 100.0 && vpn.score + 1.0 < direct.score
-
-                if (useVpn) {
-                    postStatus("Activating ASTER NODE • MTU $bestMtu")
-                    wg.connect(bestConfig!!)
-                    Thread.sleep(700)
-                    if (!wg.isUp()) error("Winning VPN route failed to activate")
-                    store.save(bestConfig!!)
-                    runOnUiThread {
-                        showResult(vpn!!, "ASTER NODE", "BOOSTED • VPN ON • ${vpn.grade}", bestMtu)
-                        vpnText.text = "VPN: ON"
-                    }
-                } else {
-                    runCatching { wg.disconnect() }
-                    runOnUiThread {
-                        showResult(
-                            direct,
-                            "DIRECT",
-                            if (vpn == null || vpn.lossPct >= 100.0) "ASTER NODE unavailable • DIRECT active" else "DIRECT wins • VPN OFF",
-                            null
-                        )
-                        vpnText.text = "VPN: OFF"
-                    }
-                }
-            } catch (e: Exception) {
-                runCatching { wg.disconnect() }
-                runOnUiThread {
-                    statusText.text = "Status: Error: ${e.message ?: "unknown"}"
-                    vpnText.text = "VPN: OFF"
-                }
-            } finally {
-                busy = false
-                runOnUiThread {
-                    setBusyUi(false)
-                    refreshControls()
-                }
-            }
-        }.start()
-    }
-
-    private fun showResult(result: BenchResult, mode: String, status: String, mtu: Int?) {
-        gradeText.text = result.grade
-        statusText.text = "Status: $status"
-        modeText.text = "Mode: $mode"
-        avgText.text = "AVG: ${formatMs(result.avgMs)}"
-        p95Text.text = "P95: ${formatMs(result.p95Ms)}"
-        jitterText.text = "Jitter: ${formatMs(result.jitterMs)}"
-        lossText.text = "Loss: ${String.format(Locale.US, "%.0f%%", result.lossPct)}"
-        mtuText.text = "MTU: ${mtu?.toString() ?: "DIRECT"}"
-    }
-
-    private fun postStatus(status: String) {
-        runOnUiThread { statusText.text = "Status: $status" }
-    }
-
-    private fun setBusyUi(value: Boolean) {
-        boostButton.isEnabled = !value
-        vpnButton.isEnabled = !value
-        importButton.isEnabled = !value
-        boostButton.text = if (value) "WORKING…" else "SMART BOOST"
-    }
-
-    private fun refreshControls() {
-        val hasConfig = store.load() != null
-        importButton.text = if (hasConfig) "REPLACE ASTER NODE" else "LOAD ASTER NODE"
-
-        Thread {
-            val up = if (hasConfig) runCatching { wg.isUp() }.getOrDefault(false) else false
+            val health = runCatching { wg.health() }.getOrNull()
             runOnUiThread {
-                vpnButton.text = when {
-                    !hasConfig -> "SETUP VPN NODE"
-                    up -> "DISCONNECT VPN"
-                    else -> "CONNECT VPN"
+                if (health?.up == true) {
+                    vpnStateText.text = if (health.hasRecentHandshake && health.hasTraffic) "VPN: ACTIVE ✓" else "VPN: UP"
+                    vpnStateText.setTextColor(
+                        if (health.hasRecentHandshake && health.hasTraffic) Color.rgb(119, 230, 159) else Color.rgb(255, 183, 96)
+                    )
+                    trafficText.text = "Traffic: RX ${formatBytes(health.rxBytes)}  /  TX ${formatBytes(health.txBytes)}"
+                    handshakeText.text = health.handshakeAgeSeconds?.let { "Handshake: ${it}s ago" } ?: "Handshake: NONE"
+                    disconnectButton.isEnabled = true
+                    connectButton.text = "RECONNECT & VERIFY"
+                } else {
+                    vpnStateText.text = "VPN: OFF"
+                    vpnStateText.setTextColor(Color.WHITE)
+                    disconnectButton.isEnabled = false
                 }
-                vpnButton.backgroundTintList = ColorStateList.valueOf(
-                    if (up) Color.rgb(178, 67, 67) else Color.rgb(33, 126, 86)
-                )
-                vpnText.text = if (up) "VPN: ON" else "VPN: OFF"
             }
         }.start()
+    }
+
+    private fun refreshConfigUi() {
+        val config = store.load()
+        if (config == null) {
+            endpointText.text = "Endpoint: no config"
+            importButton.text = "IMPORT WIREGUARD .CONF"
+        } else {
+            endpointText.text = "Endpoint: ${extractEndpoint(config) ?: "loaded"}"
+            importButton.text = "REPLACE WIREGUARD .CONF"
+        }
     }
 
     private fun openConfigPicker() {
@@ -403,37 +332,63 @@ class MainActivity : Activity() {
                     val config = contentResolver.openInputStream(uri)!!.use { input ->
                         BufferedReader(InputStreamReader(input)).readText()
                     }
-                    require(config.contains("[Interface]", ignoreCase = true))
-                    require(config.contains("[Peer]", ignoreCase = true))
-                    require(config.contains("PrivateKey", ignoreCase = true))
-                    require(config.contains("PublicKey", ignoreCase = true))
-                    require(config.contains("Endpoint", ignoreCase = true))
+
+                    wg.validate(config)
+                    require(extractEndpoint(config) != null) { "Config has no Endpoint" }
                     store.save(config)
-                    refreshControls()
-                    statusText.text = "Status: ASTER node loaded • CONNECT VPN or SMART BOOST"
-                } catch (_: Exception) {
-                    statusText.text = "Status: Bad WireGuard config"
+                    refreshConfigUi()
+                    statusText.text = "Status: Config parsed OK • tap CONNECT & VERIFY"
+                } catch (e: Exception) {
+                    statusText.text = "Status: Bad .conf: ${friendlyError(e)}"
                 }
             }
 
-            VPN_REQUEST_BOOST -> {
+            VPN_PERMISSION_REQUEST -> {
                 if (resultCode == RESULT_OK || VpnService.prepare(this) == null) {
-                    statusText.text = "Status: VPN permission OK"
-                    runBoost(store.load())
-                } else {
-                    statusText.text = "Status: VPN permission denied"
-                }
-            }
-
-            VPN_REQUEST_CONNECT -> {
-                if (resultCode == RESULT_OK || VpnService.prepare(this) == null) {
-                    statusText.text = "Status: VPN permission OK"
-                    connectSavedVpn()
+                    statusText.text = "Status: VPN permission granted"
+                    connectAndVerify()
                 } else {
                     statusText.text = "Status: VPN permission denied"
                 }
             }
         }
+    }
+
+    private fun extractEndpoint(config: String): String? =
+        Regex("(?im)^\\s*Endpoint\\s*=\\s*(.+?)\\s*$")
+            .find(config)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+
+    private fun friendlyError(error: Throwable): String {
+        val raw = error.message?.trim().orEmpty()
+        if (raw.isBlank()) return error.javaClass.simpleName
+        return raw.take(140)
+    }
+
+    private fun postStatus(value: String) {
+        runOnUiThread { statusText.text = "Status: $value" }
+    }
+
+    private fun setBusy(value: Boolean) {
+        connectButton.isEnabled = !value
+        importButton.isEnabled = !value
+        freeConfigButton.isEnabled = !value
+        if (value) {
+            connectButton.text = "VERIFYING…"
+            disconnectButton.isEnabled = false
+        } else {
+            refreshConfigUi()
+            refreshTunnelState()
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1_048_576L -> String.format(Locale.US, "%.2f MB", bytes / 1_048_576.0)
+        bytes >= 1024L -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+        else -> "$bytes B"
     }
 
     private fun text(value: String, size: Float, color: Int, style: Int): TextView = TextView(this).apply {
@@ -451,11 +406,10 @@ class MainActivity : Activity() {
     }
 
     private fun marginParams(height: Int = -2, top: Int = 0): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, if (height > 0) dp(height) else height).apply {
-            topMargin = dp(top)
-        }
-
-    private fun formatMs(value: Double): String = String.format(Locale.US, "%.1f ms", value)
+        LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            if (height > 0) dp(height) else height
+        ).apply { topMargin = dp(top) }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 }
