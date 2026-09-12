@@ -12,24 +12,28 @@ data class BenchResult(
     val lossPct: Double
 ) {
     val score: Double
-        get() = avgMs + (p95Ms - avgMs).coerceAtLeast(0.0) * 0.85 + jitterMs * 2.3 + lossPct * 11.0
+        get() = avgMs + (p95Ms - avgMs).coerceAtLeast(0.0) * 0.95 + jitterMs * 2.6 + lossPct * 14.0
 
     val grade: String
         get() = when {
             lossPct > 2.0 -> "LOSS"
             jitterMs > 18.0 -> "UNSTABLE"
-            avgMs <= 25 && jitterMs <= 5 && lossPct == 0.0 -> "ELITE"
-            avgMs <= 45 && jitterMs <= 9 && lossPct == 0.0 -> "GREAT"
+            avgMs <= 25 && p95Ms <= 35 && jitterMs <= 5 && lossPct == 0.0 -> "ELITE"
+            avgMs <= 45 && p95Ms <= 60 && jitterMs <= 9 && lossPct == 0.0 -> "GREAT"
             avgMs <= 70 && lossPct <= 1.0 -> "GOOD"
             else -> "FAIR"
         }
 }
 
 object NetBench {
+    // Diverse public connectivity targets. These are NOT PUBG servers;
+    // they are only used to compare route stability between MTU candidates.
     private val endpoints = listOf(
-        "1.1.1.1" to 443,
         "8.8.8.8" to 443,
-        "9.9.9.9" to 443
+        "8.8.4.4" to 443,
+        "9.9.9.9" to 853,
+        "149.112.112.112" to 853,
+        "1.1.1.1" to 443
     )
 
     fun run(attempts: Int = 15): BenchResult {
@@ -42,13 +46,13 @@ object NetBench {
             try {
                 Socket().use { socket ->
                     socket.tcpNoDelay = true
-                    socket.connect(InetSocketAddress(host, port), 1200)
+                    socket.connect(InetSocketAddress(host, port), 900)
                 }
                 samples += (System.nanoTime() - start) / 1_000_000.0
             } catch (_: Exception) {
                 failures++
             }
-            Thread.sleep(75)
+            Thread.sleep(55)
         }
 
         val sorted = samples.sorted()
