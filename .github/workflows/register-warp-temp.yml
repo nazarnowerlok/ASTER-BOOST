@@ -1,0 +1,66 @@
+name: Register Fresh WARP Metadata
+
+on:
+  push:
+    paths:
+      - '.github/workflows/register-warp-temp.yml'
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Register fresh WARP device using public key only
+        env:
+          WG_PUBLIC_KEY: 'XThNy/ofTtnMVDFMkEdA0Dg4q0VuZgItYgHmtMnE8ig='
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/request.json
+          import json, os
+          from datetime import datetime, timezone
+          body = {
+              "fcm_token": "",
+              "install_id": "",
+              "key": os.environ["WG_PUBLIC_KEY"],
+              "locale": "en_US",
+              "model": "Android",
+              "tos": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+              "type": "Android",
+          }
+          print(json.dumps(body))
+          PY
+
+          code=$(curl --silent --show-error --location --http1.1 --tlsv1.2 --tls-max 1.2 \
+            -o /tmp/warp.json -w '%{http_code}' \
+            -X POST 'https://api.cloudflareclient.com/v0a1922/reg' \
+            -H 'User-Agent: okhttp/3.12.1' \
+            -H 'CF-Client-Version: a-6.3-1922' \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/request.json)
+          test "$code" = "200" || { echo "Cloudflare registration HTTP $code"; exit 1; }
+
+          python3 - <<'PY'
+          import json
+          with open('/tmp/warp.json', 'r', encoding='utf-8') as f:
+              d = json.load(f)
+          cfg = d['config']
+          peer = cfg['peers'][0]
+          out = {
+              'address_v4': cfg['interface']['addresses']['v4'],
+              'address_v6': cfg['interface']['addresses']['v6'],
+              'server_public_key': peer['public_key'],
+              'endpoint_host': peer['endpoint']['host'],
+              'endpoint_v4': peer['endpoint']['v4'],
+              'endpoint_v6': peer['endpoint']['v6'],
+          }
+          with open('warp-sanitized.json', 'w', encoding='utf-8') as f:
+              json.dump(out, f, indent=2)
+          print('Fresh WARP metadata generated successfully; no private key or account token was uploaded.')
+          PY
+
+      - name: Upload sanitized WARP metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresh-warp-metadata
+          path: warp-sanitized.json
+          if-no-files-found: error
+          retention-days: 1
