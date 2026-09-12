@@ -20,7 +20,8 @@ import java.util.Locale
 class MainActivity : Activity() {
     companion object {
         private const val IMPORT_REQUEST = 1001
-        private const val VPN_REQUEST = 1002
+        private const val VPN_REQUEST_BOOST = 1002
+        private const val VPN_REQUEST_CONNECT = 1003
     }
 
     private lateinit var wg: WireGuardController
@@ -29,12 +30,14 @@ class MainActivity : Activity() {
     private lateinit var gradeText: TextView
     private lateinit var statusText: TextView
     private lateinit var modeText: TextView
+    private lateinit var vpnText: TextView
     private lateinit var avgText: TextView
     private lateinit var p95Text: TextView
     private lateinit var jitterText: TextView
     private lateinit var lossText: TextView
     private lateinit var mtuText: TextView
     private lateinit var boostButton: Button
+    private lateinit var vpnButton: Button
     private lateinit var importButton: Button
 
     @Volatile
@@ -45,7 +48,12 @@ class MainActivity : Activity() {
         wg = WireGuardController(this)
         store = ConfigStore(this)
         buildUi()
-        updateImportButton()
+        refreshControls()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::vpnButton.isInitialized) refreshControls()
     }
 
     private fun buildUi() {
@@ -65,7 +73,7 @@ class MainActivity : Activity() {
 
         root.addView(text("ASTER BOOST", 32f, Color.WHITE, Typeface.BOLD))
         root.addView(
-            text("Cleanest measured route wins.", 15f, Color.rgb(170, 177, 193), Typeface.NORMAL),
+            text("Real WireGuard control + route tuning.", 15f, Color.rgb(170, 177, 193), Typeface.NORMAL),
             marginParams(top = 4)
         )
 
@@ -79,6 +87,7 @@ class MainActivity : Activity() {
         gradeText = text("NETWORK", 21f, Color.WHITE, Typeface.BOLD)
         statusText = text("Status: READY", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
         modeText = text("Mode: DIRECT", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
+        vpnText = text("VPN: OFF", 14f, Color.rgb(210, 214, 223), Typeface.BOLD)
         avgText = text("AVG: —", 16f, Color.WHITE, Typeface.BOLD)
         p95Text = text("P95: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
         jitterText = text("Jitter: —", 14f, Color.rgb(210, 214, 223), Typeface.NORMAL)
@@ -88,6 +97,7 @@ class MainActivity : Activity() {
         card.addView(gradeText)
         card.addView(statusText, marginParams(top = 10))
         card.addView(modeText, marginParams(top = 5))
+        card.addView(vpnText, marginParams(top = 5))
         card.addView(avgText, marginParams(top = 16))
         card.addView(p95Text, marginParams(top = 5))
         card.addView(jitterText, marginParams(top = 5))
@@ -105,6 +115,17 @@ class MainActivity : Activity() {
         }
         root.addView(boostButton, marginParams(height = 62, top = 18))
 
+        vpnButton = Button(this).apply {
+            text = "SETUP VPN NODE"
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            isAllCaps = false
+            backgroundTintList = ColorStateList.valueOf(Color.rgb(33, 126, 86))
+            setOnClickListener { toggleVpn() }
+        }
+        root.addView(vpnButton, marginParams(height = 56, top = 12))
+
         importButton = Button(this).apply {
             textSize = 15f
             setTextColor(Color.WHITE)
@@ -116,7 +137,7 @@ class MainActivity : Activity() {
 
         root.addView(
             text(
-                "DIRECT works without a VPN. With a private WireGuard node, SMART BOOST tests DIRECT and several safe MTU values, then keeps the route with the better stability score. Public probes are not PUBG server ping.",
+                "SMART BOOST compares DIRECT and the saved WireGuard node, tests safe MTU values, and leaves the better route active. CONNECT VPN forces the saved node on immediately. A real remote WireGuard node is required; ASTER BOOST does not fake VPN status or fake ping.",
                 12.5f,
                 Color.rgb(145, 152, 168),
                 Typeface.NORMAL
@@ -133,11 +154,103 @@ class MainActivity : Activity() {
         if (config != null) {
             val permissionIntent = VpnService.prepare(this)
             if (permissionIntent != null) {
-                startActivityForResult(permissionIntent, VPN_REQUEST)
+                startActivityForResult(permissionIntent, VPN_REQUEST_BOOST)
                 return
             }
         }
         runBoost(config)
+    }
+
+    private fun toggleVpn() {
+        if (busy) return
+        val config = store.load()
+        if (config == null) {
+            statusText.text = "Status: Load ASTER NODE first"
+            openConfigPicker()
+            return
+        }
+
+        busy = true
+        setBusyUi(true)
+        Thread {
+            val up = runCatching { wg.isUp() }.getOrDefault(false)
+            busy = false
+            runOnUiThread {
+                setBusyUi(false)
+                if (up) disconnectVpn() else requestOrConnectVpn()
+            }
+        }.start()
+    }
+
+    private fun requestOrConnectVpn() {
+        val permissionIntent = VpnService.prepare(this)
+        if (permissionIntent != null) {
+            startActivityForResult(permissionIntent, VPN_REQUEST_CONNECT)
+        } else {
+            connectSavedVpn()
+        }
+    }
+
+    private fun connectSavedVpn() {
+        if (busy) return
+        val config = store.load() ?: run {
+            statusText.text = "Status: No ASTER NODE loaded"
+            return
+        }
+
+        busy = true
+        setBusyUi(true)
+        Thread {
+            try {
+                postStatus("Connecting VPN")
+                wg.connect(config)
+                Thread.sleep(900)
+                if (!wg.isUp()) error("Tunnel did not come up")
+                val result = NetBench.run(12)
+                runOnUiThread {
+                    showResult(result, "ASTER NODE", "VPN CONNECTED • ${result.grade}", ConfigTuner.extractMtu(config))
+                    vpnText.text = "VPN: ON"
+                }
+            } catch (e: Exception) {
+                runCatching { wg.disconnect() }
+                runOnUiThread {
+                    statusText.text = "Status: VPN error: ${e.message ?: "unknown"}"
+                    vpnText.text = "VPN: OFF"
+                }
+            } finally {
+                busy = false
+                runOnUiThread {
+                    setBusyUi(false)
+                    refreshControls()
+                }
+            }
+        }.start()
+    }
+
+    private fun disconnectVpn() {
+        if (busy) return
+        busy = true
+        setBusyUi(true)
+        Thread {
+            try {
+                wg.disconnect()
+                Thread.sleep(250)
+                runOnUiThread {
+                    modeText.text = "Mode: DIRECT"
+                    vpnText.text = "VPN: OFF"
+                    statusText.text = "Status: VPN disconnected"
+                    mtuText.text = "MTU: DIRECT"
+                }
+            } catch (e: Exception) {
+                runOnUiThread { statusText.text = "Status: Disconnect error: ${e.message ?: "unknown"}" }
+            } finally {
+                busy = false
+                runOnUiThread {
+                    setBusyUi(false)
+                    refreshControls()
+                }
+            }
+        }.start()
     }
 
     private fun runBoost(config: String?) {
@@ -154,12 +267,8 @@ class MainActivity : Activity() {
 
                 if (config == null) {
                     runOnUiThread {
-                        showResult(
-                            direct,
-                            mode = "DIRECT",
-                            status = "DIRECT active • add ASTER NODE to compare VPN",
-                            mtu = null
-                        )
+                        showResult(direct, "DIRECT", "DIRECT active • load ASTER NODE for real VPN", null)
+                        vpnText.text = "VPN: OFF"
                     }
                     return@Thread
                 }
@@ -177,6 +286,7 @@ class MainActivity : Activity() {
                     val candidate = try {
                         wg.connect(tuned)
                         Thread.sleep(1200)
+                        if (!wg.isUp()) throw IllegalStateException("Tunnel is down")
                         NetBench.run(15)
                     } catch (_: Exception) {
                         BenchResult(999.0, 999.0, 999.0, 100.0)
@@ -197,35 +307,37 @@ class MainActivity : Activity() {
                 if (useVpn) {
                     postStatus("Activating ASTER NODE • MTU $bestMtu")
                     wg.connect(bestConfig!!)
+                    Thread.sleep(700)
+                    if (!wg.isUp()) error("Winning VPN route failed to activate")
                     store.save(bestConfig!!)
-                    Thread.sleep(600)
                     runOnUiThread {
-                        showResult(
-                            vpn!!,
-                            mode = "ASTER NODE",
-                            status = "BOOSTED • ${vpn.grade}",
-                            mtu = bestMtu
-                        )
-                        updateImportButton()
+                        showResult(vpn!!, "ASTER NODE", "BOOSTED • VPN ON • ${vpn.grade}", bestMtu)
+                        vpnText.text = "VPN: ON"
                     }
                 } else {
+                    runCatching { wg.disconnect() }
                     runOnUiThread {
                         showResult(
                             direct,
-                            mode = "DIRECT",
-                            status = if (vpn == null || vpn.lossPct >= 100.0) "ASTER NODE unavailable • DIRECT active" else "DIRECT wins",
-                            mtu = null
+                            "DIRECT",
+                            if (vpn == null || vpn.lossPct >= 100.0) "ASTER NODE unavailable • DIRECT active" else "DIRECT wins • VPN OFF",
+                            null
                         )
+                        vpnText.text = "VPN: OFF"
                     }
                 }
             } catch (e: Exception) {
                 runCatching { wg.disconnect() }
                 runOnUiThread {
                     statusText.text = "Status: Error: ${e.message ?: "unknown"}"
+                    vpnText.text = "VPN: OFF"
                 }
             } finally {
                 busy = false
-                runOnUiThread { setBusyUi(false) }
+                runOnUiThread {
+                    setBusyUi(false)
+                    refreshControls()
+                }
             }
         }.start()
     }
@@ -247,8 +359,29 @@ class MainActivity : Activity() {
 
     private fun setBusyUi(value: Boolean) {
         boostButton.isEnabled = !value
+        vpnButton.isEnabled = !value
         importButton.isEnabled = !value
-        boostButton.text = if (value) "TUNING…" else "SMART BOOST"
+        boostButton.text = if (value) "WORKING…" else "SMART BOOST"
+    }
+
+    private fun refreshControls() {
+        val hasConfig = store.load() != null
+        importButton.text = if (hasConfig) "REPLACE ASTER NODE" else "LOAD ASTER NODE"
+
+        Thread {
+            val up = if (hasConfig) runCatching { wg.isUp() }.getOrDefault(false) else false
+            runOnUiThread {
+                vpnButton.text = when {
+                    !hasConfig -> "SETUP VPN NODE"
+                    up -> "DISCONNECT VPN"
+                    else -> "CONNECT VPN"
+                }
+                vpnButton.backgroundTintList = ColorStateList.valueOf(
+                    if (up) Color.rgb(178, 67, 67) else Color.rgb(33, 126, 86)
+                )
+                vpnText.text = if (up) "VPN: ON" else "VPN: OFF"
+            }
+        }.start()
     }
 
     private fun openConfigPicker() {
@@ -276,14 +409,14 @@ class MainActivity : Activity() {
                     require(config.contains("PublicKey", ignoreCase = true))
                     require(config.contains("Endpoint", ignoreCase = true))
                     store.save(config)
-                    updateImportButton()
-                    statusText.text = "Status: ASTER node loaded • tap SMART BOOST"
+                    refreshControls()
+                    statusText.text = "Status: ASTER node loaded • CONNECT VPN or SMART BOOST"
                 } catch (_: Exception) {
                     statusText.text = "Status: Bad WireGuard config"
                 }
             }
 
-            VPN_REQUEST -> {
+            VPN_REQUEST_BOOST -> {
                 if (resultCode == RESULT_OK || VpnService.prepare(this) == null) {
                     statusText.text = "Status: VPN permission OK"
                     runBoost(store.load())
@@ -291,11 +424,16 @@ class MainActivity : Activity() {
                     statusText.text = "Status: VPN permission denied"
                 }
             }
-        }
-    }
 
-    private fun updateImportButton() {
-        importButton.text = if (store.load() == null) "LOAD ASTER NODE" else "REPLACE ASTER NODE"
+            VPN_REQUEST_CONNECT -> {
+                if (resultCode == RESULT_OK || VpnService.prepare(this) == null) {
+                    statusText.text = "Status: VPN permission OK"
+                    connectSavedVpn()
+                } else {
+                    statusText.text = "Status: VPN permission denied"
+                }
+            }
+        }
     }
 
     private fun text(value: String, size: Float, color: Int, style: Int): TextView = TextView(this).apply {
