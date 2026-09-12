@@ -5,6 +5,7 @@
         android:allowBackup="false"
         android:label="ASTER BOOST"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="false"
         android:theme="@style/Theme.AsterBoost">
 
         <activity
